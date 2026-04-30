@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TEIA Users Chain (2022-2026)</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+    body {
+      margin: 0;
+      background: #f5f5f5;
+      color: #111;
+      overflow: hidden;
+    }
+    #ui {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      right: 12px;
+      z-index: 10;
+      pointer-events: none;
+    }
+    .panel {
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 10px 12px;
+      max-width: 540px;
+      pointer-events: auto;
+      backdrop-filter: blur(4px);
+    }
+    #status {
+      font-size: 14px;
+      line-height: 1.35;
+      margin-bottom: 8px;
+      white-space: pre-line;
+    }
+    #userInfo {
+      font-size: 13px;
+      line-height: 1.35;
+      display: none;
+    }
+    a { color: #005fcc; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div class="panel">
+      <div id="status">Loading TEIA data...</div>
+      <div id="userInfo"></div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+  <script>
+    const DATA_FILE = "./users_2022_2026.json";
+
+    const statusEl = document.getElementById("status");
+    const userInfoEl = document.getElementById("userInfo");
+
+    const viewerWallet = new URLSearchParams(location.search).get("viewer") || "viewer";
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    async function loadUsers() {
+      setStatus("Loading frozen TEIA dataset...");
+      const res = await fetch(DATA_FILE, { cache: "no-store" });
+      if (!res.ok) {
+        throw new Error(`Could not load ${DATA_FILE} (HTTP ${res.status})`);
+      }
+      const users = await res.json();
+      if (!Array.isArray(users)) {
+        throw new Error("Local dataset has invalid format.");
+      }
+      return users;
+    }
+
+    function drawSketch(users) {
+      let w = window.innerWidth;
+      let h = window.innerHeight;
+
+      const bgColor = [245, 245, 245];
+      const strokeColor = [0, 180, 0, 90];
+      const strokeColorAlt = [0, 150, 150, 255];
+      const userColor = [25, 25, 25, 80];
+      const userColorAlt = [225, 225, 225, 255];
+      const viewerColor = [95, 95, 240, 255];
+      const reportedUserColor = [235, 95, 95, 255];
+
+      let altColorMode = false;
+      let blockSize = Math.max(4, Math.min(w, h) / 5);
+      let userCounter = 0;
+      let xMin = 0;
+      let xMax = 0;
+      let yMin = 0;
+      let yMax = 0;
+      let xCenter = 0;
+      let yCenter = 0;
+      let zoom = 1;
+      let selectedUser = null;
+      let viewer = null;
+      let viewerIndex = -1;
+      let chain = [];
+
+      function updateUserInfo(user) {
+        if (!user) {
+          userInfoEl.style.display = "none";
+          return;
+        }
+        userInfoEl.style.display = "block";
+        const short = `${user.wallet.slice(0, 6)}...${user.wallet.slice(-6)}`;
+        const objktPart = user.first_objkt
+          ? `<a href="https://objkt.com/tokens/${user.first_objkt}" target="_blank" rel="noreferrer">OBJKT#${user.first_objkt}</a>`
+          : "none";
+        userInfoEl.innerHTML = [
+          `<b>${user.type.toUpperCase()}</b> — <a href="https://objkt.com/users/${user.wallet}" target="_blank" rel="noreferrer">${short}</a>`,
+          `Timestamp: ${user.timestamp}`,
+          `First OBJKT: ${objktPart}`
+        ].join("<br>");
+      }
+
+      function createChain(p) {
+        chain = [];
+        viewer = null;
+        viewerIndex = -1;
+        let pos = null;
+        let dir = null;
+
+        for (let i = 0; i < users.length; i++) {
+          const user = { ...users[i] };
+          if (i === 0) {
+            pos = p.createVector(0, 0);
+            dir = p.createVector(1, 0);
+          } else {
+            pos = pos.copy().add(dir);
+            if (user.type !== "artist") {
+              dir = p.createVector(dir.y, -dir.x);
+            }
+          }
+          user.pos = pos.copy();
+          user.dir = dir.copy();
+          user.color = user.reported ? reportedUserColor : userColor;
+          user.colorAlt = user.reported ? reportedUserColor : userColorAlt;
+          if (user.wallet === viewerWallet) {
+            user.color = viewerColor;
+            user.colorAlt = viewerColor;
+            viewer = user;
+            viewerIndex = i;
+          }
+          chain.push(user);
+        }
+      }
+
+      function getUserPosition(p, user) {
+        const first = p.createVector(
+          p.width / 2 - zoom * blockSize * xCenter,
+          p.height / 2 - zoom * blockSize * yCenter
+        );
+        return user.pos.copy().mult(zoom * blockSize).add(first);
+      }
+
+      function updateBlockSize() {
+        if (userCounter < chain.length) {
+          const c = chain[userCounter];
+          xMin = Math.min(xMin, c.pos.x);
+          xMax = Math.max(xMax, c.pos.x);
+          yMin = Math.min(yMin, c.pos.y);
+          yMax = Math.max(yMax, c.pos.y);
+        }
+      }
+
+      function drawUser(p, user) {
+        const up = getUserPosition(p, user);
+        p.noStroke();
+        p.fill(...(altColorMode ? user.colorAlt : user.color));
+        p.square(up.x, up.y, zoom * blockSize);
+      }
+
+      function drawChain(p) {
+        p.background(...bgColor);
+        const margin = Math.max(18, 0.07 * Math.min(p.width, p.height));
+        const reqWidth = 2 * (zoom * blockSize * Math.max(Math.abs(xMax - xCenter), Math.abs(xMin - xCenter)) + margin);
+        const reqHeight = 2 * (zoom * blockSize * Math.max(Math.abs(yMax - yCenter), Math.abs(yMin - yCenter)) + margin);
+
+        if (reqWidth > p.width || reqHeight > p.height) {
+          zoom *= Math.min(p.width / reqWidth, p.height / reqHeight) * 0.985;
+          xCenter = (xMax + xMin) / 2;
+          yCenter = (yMax + yMin) / 2;
+        }
+
+        for (let i = 0; i < Math.min(userCounter + 1, chain.length); i++) {
+          drawUser(p, chain[i]);
+        }
+
+        if (viewer && userCounter > viewerIndex) {
+          const vp = getUserPosition(p, viewer);
+          drawUser(p, viewer);
+          p.push();
+          p.stroke(...viewerColor);
+          p.noFill();
+          p.circle(vp.x, vp.y, Math.max(28, 3.5 * zoom * blockSize));
+          p.pop();
+        }
+      }
+
+      new p5((p) => {
+        p.setup = function() {
+          createChain(p);
+          p.createCanvas(w, h);
+          p.rectMode(p.CENTER);
+          p.strokeWeight(1);
+          p.stroke(...(altColorMode ? strokeColorAlt : strokeColor));
+          p.frameRate(60);
+          p.background(...bgColor);
+          setStatus(
+            `TEIA users chain\n${users.length} unique users from Feb 2022 to Feb 2026\n` +
+            `Space: color mode | Enter: draw all | Arrows: pan | Z/X: zoom`
+          );
+        };
+
+        p.draw = function() {
+          if (userCounter < chain.length) {
+            updateBlockSize();
+            drawChain(p);
+            updateUserInfo(selectedUser || chain[userCounter]);
+            userCounter += 1;
+          } else {
+            p.noLoop();
+          }
+        };
+
+        p.windowResized = function() {
+          w = window.innerWidth;
+          h = window.innerHeight;
+          p.resizeCanvas(w, h);
+          drawChain(p);
+          updateUserInfo(selectedUser);
+        };
+
+        p.mouseClicked = function() {
+          selectedUser = null;
+          for (let i = 0; i < Math.min(userCounter + 1, chain.length); i++) {
+            const u = chain[i];
+            const up = getUserPosition(p, u);
+            if (Math.abs(p.mouseX - up.x) < (zoom * blockSize) / 2 &&
+                Math.abs(p.mouseY - up.y) < (zoom * blockSize) / 2) {
+              selectedUser = u.wallet === viewerWallet && viewer ? viewer : u;
+            }
+          }
+          drawChain(p);
+          updateUserInfo(selectedUser);
+          return false;
+        };
+
+        p.keyPressed = function() {
+          if (p.key === " ") {
+            altColorMode = !altColorMode;
+            p.stroke(...(altColorMode ? strokeColorAlt : strokeColor));
+            drawChain(p);
+          }
+          if (p.keyCode === p.ENTER) {
+            userCounter = chain.length;
+            drawChain(p);
+          }
+          if (userCounter >= chain.length) {
+            if (p.keyCode === p.LEFT_ARROW) xCenter -= 1;
+            if (p.keyCode === p.RIGHT_ARROW) xCenter += 1;
+            if (p.keyCode === p.UP_ARROW) yCenter -= 1;
+            if (p.keyCode === p.DOWN_ARROW) yCenter += 1;
+            if (p.key === "z" || p.key === "Z") zoom *= 1.4;
+            if (p.key === "x" || p.key === "X") zoom /= 1.4;
+            if (p.keyCode === p.ESCAPE) {
+              zoom = 1;
+              xCenter = (xMax + xMin) / 2;
+              yCenter = (yMax + yMin) / 2;
+            }
+            drawChain(p);
+          }
+          return false;
+        };
+      });
+    }
+
+    async function boot() {
+      try {
+        const users = await loadUsers();
+        if (!users.length) {
+          setStatus("No users found in the requested window.");
+          return;
+        }
+        drawSketch(users);
+      } catch (err) {
+        console.error(err);
+        setStatus("Failed to load TEIA data.\n" + (err.message || String(err)));
+      }
+    }
+
+    boot();
+  </script>
+</body>
+</html>
